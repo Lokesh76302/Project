@@ -6,58 +6,81 @@
 #include <iomanip>
 #include <sstream>
 
-using namespace std;
-
-// Function to get data from a URL
-string fetchData(const string& url) {
-  CURL* curl = curl_easy_init();
-  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-
-  string data;
-  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, [](void* buffer, size_t size, size_t nmemb, void* userData) -> size_t {
+// Function to write received data to a string
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* output) {
     size_t totalSize = size * nmemb;
-    static_cast<string*>(userData)->append(static_cast<char*>(buffer), totalSize);
+    output->append(static_cast<char*>(contents), totalSize);
     return totalSize;
-  });
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
-
-  curl_easy_perform(curl);
-  curl_easy_cleanup(curl);
-
-  return data;
 }
 
-// Function to generate the SHA-256 hash
-string computeHash(const string& text) {
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  EVP_MD_CTX* context = EVP_MD_CTX_new();
-  EVP_DigestInit_ex(context, EVP_sha256(), nullptr);
-  EVP_DigestUpdate(context, text.c_str(), text.length());
-  EVP_DigestFinal_ex(context, hash, nullptr);
-  EVP_MD_CTX_free(context);
+// Function to download content from a URL using libcurl
+std::string downloadBook(const std::string& url) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        throw std::runtime_error("Failed to initialize libcurl.");
+    }
 
-  stringstream ss;
-  for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-    ss << hex << setfill('0') << setw(2) << (int)hash[i];
-  }
+    std::string content;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &content);
 
-  return ss.str();
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        throw std::runtime_error("Failed to download the book.");
+    }
+
+    return content;
+}
+
+// Function to calculate SHA-256 hash
+std::string calculateHash(const std::string& text) {
+    EVP_MD_CTX* mdContext = EVP_MD_CTX_new();
+    if (!mdContext) {
+        throw std::runtime_error("Failed to create MD context.");
+    }
+
+    if (EVP_DigestInit_ex(mdContext, EVP_sha256(), nullptr) != 1) {
+        EVP_MD_CTX_free(mdContext);
+        throw std::runtime_error("Failed to initialize SHA-256 context.");
+    }
+
+    if (EVP_DigestUpdate(mdContext, text.c_str(), text.length()) != 1) {
+        EVP_MD_CTX_free(mdContext);
+        throw std::runtime_error("Failed to update SHA-256 context.");
+    }
+
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hashLength;
+    if (EVP_DigestFinal_ex(mdContext, hash, &hashLength) != 1) {
+        EVP_MD_CTX_free(mdContext);
+        throw std::runtime_error("Failed to finalize SHA-256 hash.");
+    }
+
+    EVP_MD_CTX_free(mdContext);
+
+    std::stringstream ss;
+    for (unsigned int i = 0; i < hashLength; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+    }
+
+    return ss.str();
 }
 
 int main() {
-  // URL of the content you want to fetch
-  const string contentUrl = "https://quod.lib.umich.edu/cgi/r/rsv/rsv-idx?
+    const std::string bookUrl = "https://quod.lib.umich.edu/cgi/r/rsv/rsv-idx?type=DIV1&byte=4697892";
 
-type=DIV1&byte=4697892";
+    try {
+        std::string bookText = downloadBook(bookUrl);
+        std::string hash = calculateHash(bookText);
 
-  // Fetch the content
-  string fetchedData = fetchData(contentUrl);
+        std::cout << "SHA-256 Hash of the Book:\n" << hash << std::endl;
+    } catch (const std::runtime_error& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1; // Return a non-zero value to indicate an error
+    }
 
-  // Calculate the SHA-256 hash
-  string contentHash = computeHash(fetchedData);
-
-  // Print the hash
-  cout << "SHA-256 hash for the content is: " << contentHash << endl;
-
-  return 0;
-}
+    return 0;
